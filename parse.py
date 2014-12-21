@@ -20,8 +20,9 @@ TOTAL_DUE_REGEX = re.compile(r'TOTAL\s+DUE\s+[0-9]+\.[0-9]+')
 BALANCE_DUE_REGEX = re.compile(r'BALANCE\s+DUE\s+[0-9]+\.[0-9]+')
 INDOOR_TENDER_TYPE_REGEX = re.compile(r'(?P<tender>\w+)\s+.*')
 DATE_TIME_REGEX = re.compile(r'(?P<month>[0-9]+)/(?P<day>[0-9]+)/(?P<yr>[0-9]+)\s+(?P<hr>[0-9]+):(?P<min>[0-9]+):(?P<sec>[0-9]+)')
-FUEL_TYPE_REGEX = re.compile(r'\s+(?P<gas_type>(PLUS|UNLEADED|SUPREME)+)\s+PUR(E)?\s+[0-9]+\.[0-9]+')
+FUEL_TYPE_REGEX = re.compile(r'\s+(?P<gas_type>(PLUS|UNLEADED|SUPREME)+)\s+PUR(E)?\s+(?P<dollars>[0-9]+)\.(?P<cents>[0-9]+)')
 FUEL_VOLUME_REGEX = re.compile(r'\s+Vol\s+(?P<galls>[0-9]+)\.(?P<galls_dec>[0-9]+)@\s+(?P<price>[0-9]+)\.(?P<price_dec>[0-9]+)')
+OUTDOOR_TENDER_TYPE_REGEX = re.compile('(?P<tender>(Credit|Debit)+)\s+Card\s+[0-9]+.[0-9]+')
 
 
 class Txn(object):
@@ -131,6 +132,35 @@ def handle_final_gas_txn(original_fuel_prepay_match, txn_line_offset, line_offse
     return final_txn
 
 
+def handle_outdoor_gas_txn(txn_id, date, time, pump_num, txn_line_offset, line_offsets, txn_line, f):
+    """"""
+    # Advance 2 lines to get fuel type
+    txn_line_offset += 3
+    f.seek(line_offsets[txn_line + txn_line_offset])
+    f_type_line = f.readline()
+    fuel_type_match = re.match(FUEL_TYPE_REGEX, f_type_line)
+    fuel_type = fuel_type_match.group('gas_type')
+    amount = '{0}.{1}'.format(fuel_type_match.group('dollars'), fuel_type_match.group('cents'))
+    # Advance 2 lines to get volume
+    txn_line_offset += 2
+    f.seek(line_offsets[txn_line + txn_line_offset])
+    vol_line = f.readline()
+    vol_match = re.match(FUEL_VOLUME_REGEX, vol_line)
+    fuel_volume = '{0}.{1}'.format(vol_match.group('galls'), vol_match.group('galls_dec'))
+    price = '{0}.{1}'.format(vol_match.group('price'), vol_match.group('price_dec'))
+    tender_type_found, tender = False, None
+    while not tender_type_found:
+        txn_line_offset += 1
+        f.seek(line_offsets[txn_line + txn_line_offset])
+        t_line = f.readline()
+        tender_match = re.match(OUTDOOR_TENDER_TYPE_REGEX, t_line)
+        if tender_match:
+            tender_type_found = True
+            tender = tender_match.group('tender')
+    outdoor_txn = GasTxn(id=txn_id, date=date, time=time, amount=amount, volume=fuel_volume, location=Location.Outdoor.name, tender=tender, gas_type=fuel_type, pump_num=pump_num, indoor_prepay=False, reference_num=None, price=price)
+    return outdoor_txn
+
+
 def get_gas_transaction_from_line(txn_line, line_offsets, f):
     """
     txn_line + 1: Date and time
@@ -221,7 +251,8 @@ def get_gas_transaction_from_line(txn_line, line_offsets, f):
                 return False, None
     else:
         # It's outdoor, this is a gas txn
-        return False, None
+        pump_num = loc_tmnl_match.group('terminal')
+        return True, handle_outdoor_gas_txn(txn_id, date, time, pump_num, txn_line_offset, line_offsets, txn_line, f)
 
 
 def merge_txns(prepay_txn, final_txn):
@@ -253,14 +284,15 @@ def get_gas_transactions_for_day(day_path):
                 if gas_txn.indoor_prepay:
                     # put it in the prepay map
                     prepay_map[gas_txn.reference_num] = gas_txn
-
-                else:
+                elif gas_txn.location == Location.Indoor.name:
                     if gas_txn.reference_num in skip_ref_set:
                         continue
                     skip_ref_set.add(gas_txn.reference_num)
                     prepay_txn = prepay_map[gas_txn.reference_num]
                     del prepay_map[gas_txn.reference_num]
                     gas_txn = merge_txns(prepay_txn, gas_txn)
+                    gas_txns.append(gas_txn)
+                else:
                     gas_txns.append(gas_txn)
     print len(gas_txns)
 
