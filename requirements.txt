@@ -1,2 +1,4 @@
 enum34==1.0.4
+jdcal==1.0
+openpyxl==2.1.4
 wsgiref==0.1.2
